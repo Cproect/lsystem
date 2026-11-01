@@ -169,7 +169,12 @@ input[type=checkbox]{width:19px;height:19px;accent-color:var(--acc);flex:none}
   .sumc b{font-size:19px}
   .card{padding:14px}
 }
+/* auth gate */
+[hidden]{display:none!important}
+#authform{display:flex;flex-direction:column;gap:12px}
+#logoutbtn{order:5;padding:6px 12px;font-size:13px}
 </style>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
 <header>
@@ -177,7 +182,21 @@ input[type=checkbox]{width:19px;height:19px;accent-color:var(--acc);flex:none}
   <nav id="nav"></nav>
   <div id="status"></div>
   <button class="ib" id="lockbtn" title="Пароль">🔓</button>
+  <button class="ghost" id="logoutbtn" hidden>Выйти</button>
 </header>
+<div class="ov" id="authov">
+  <div class="ovbox">
+    <div class="brand">LIFE SYSTEM</div>
+    <p id="authmsg">Проверка доступа…</p>
+    <form id="authform" hidden autocomplete="off">
+      <input type="password" id="authpw" placeholder="Пароль" autocomplete="off">
+      <input type="password" id="authpw2" placeholder="Повторите пароль" autocomplete="off" hidden>
+      <button class="ghost" id="authbtn" type="submit">Войти</button>
+    </form>
+    <button class="ghost" id="authretry" type="button" hidden>Повторить</button>
+    <div class="lerr" id="autherr"></div>
+  </div>
+</div>
 <main id="app"></main>
 <noscript>Для работы приложения нужен JavaScript.</noscript>
 <script>
@@ -1024,14 +1043,95 @@ function render(){
   window.scrollTo(0,y);
 }
 document.getElementById('lockbtn').addEventListener('click',openPw);
-(function boot(){
+var started=false;
+window.LifeSystem={start:function(){
+  if(started)return;started=true;
   var locked=null;
   try{locked=localStorage.getItem(LOCKKEY)}catch(e){}
   if(locked){showLock();return}
   S=load();
   render();
+}};
 })();
-})();
+</script>
+<script type="module">
+import {hasSession,getMe,startTelegramAuth,setupPassword,loginWithPassword,logout,clearSession} from './auth.js';
+
+const $=id=>document.getElementById(id);
+const el={ov:$('authov'),msg:$('authmsg'),form:$('authform'),pw:$('authpw'),pw2:$('authpw2'),
+  btn:$('authbtn'),retry:$('authretry'),err:$('autherr'),logout:$('logoutbtn')};
+let mode=null,busy=false,entered=false;
+
+const ERR={
+  TELEGRAM_REQUIRED:'Откройте LIFE SYSTEM через Telegram (бот → Mini App). В обычном браузере вход недоступен.',
+  PASSWORD_LENGTH_INVALID:'Пароль должен быть от 10 до 128 символов.',
+  PASSWORD_REQUIRED:'Введите пароль.',
+  INVALID_PASSWORD:'Неверный пароль.',
+  PREAUTH_REQUIRED:'Сессия входа истекла. Нажмите «Начать заново».',
+  INVALID_SERVER_RESPONSE:'Сервер вернул некорректный ответ.',
+  INVALID_SESSION_RESPONSE:'Сервер вернул некорректный ответ.',
+  UNAUTHORIZED:'Требуется вход.',
+  RATE_LIMITED:'Слишком много попыток. Подождите и повторите.',
+  TOO_MANY_ATTEMPTS:'Слишком много попыток. Подождите и повторите.'
+};
+function errText(e){
+  if(e instanceof TypeError)return 'Нет связи с сервером (или доступ с этого адреса запрещён).';
+  const c=e&&e.message;
+  return ERR[c]||('Ошибка входа ('+(c||'неизвестная')+').');
+}
+function view(o){
+  el.msg.textContent=o.msg||'';
+  el.err.textContent=o.err||'';
+  el.form.hidden=!o.form;
+  el.pw2.hidden=o.form!=='setup';
+  el.btn.textContent=o.form==='setup'?'Установить пароль':'Войти';
+  el.retry.hidden=!o.retry;
+  if(o.retry)el.retry.textContent=o.retry;
+  mode=o.form||null;
+  if(o.form)setTimeout(()=>el.pw.focus(),0);
+}
+function enter(){
+  if(entered)return;entered=true;
+  el.ov.hidden=true;el.logout.hidden=false;
+  window.LifeSystem.start();
+}
+async function boot(){
+  view({msg:'Проверка доступа…'});
+  try{
+    if(hasSession()){
+      try{await getMe();enter();return}
+      catch(e){if(e instanceof TypeError)throw e;clearSession()}
+    }else{
+      clearSession(); /* не отправлять устаревший токен на /api/auth/telegram */
+    }
+    const st=await startTelegramAuth();
+    if(st.passwordSetupRequired)
+      view({msg:'Первый вход. Придумайте пароль (от 10 символов) — он понадобится при следующих входах.',form:'setup',retry:'Начать заново'});
+    else if(st.passwordRequired)
+      view({msg:'Введите пароль.',form:'verify',retry:'Начать заново'});
+    else throw new Error('UNEXPECTED_AUTH_STATE');
+  }catch(e){
+    view({msg:'Не удалось войти.',err:errText(e),retry:'Повторить'});
+  }
+}
+el.form.addEventListener('submit',async ev=>{
+  ev.preventDefault();
+  if(busy||!mode)return;
+  const pw=el.pw.value,pw2=el.pw2.value;
+  if(mode==='setup'&&pw!==pw2){el.err.textContent='Пароли не совпадают.';return}
+  busy=true;el.btn.disabled=true;el.err.textContent='';
+  try{
+    if(mode==='setup')await setupPassword(pw);else await loginWithPassword(pw);
+    enter();
+  }catch(e){el.err.textContent=errText(e)}
+  finally{el.pw.value='';el.pw2.value='';busy=false;el.btn.disabled=false}
+});
+el.retry.addEventListener('click',boot);
+el.logout.addEventListener('click',async()=>{
+  try{await logout()}catch(e){}
+  location.reload();
+});
+boot();
 </script>
 </body>
 </html>
