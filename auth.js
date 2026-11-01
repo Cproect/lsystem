@@ -1,7 +1,7 @@
 // auth.js
 // SABE Account System — Client Auth Module
 
-const SABE_API = "https://sabeauth.brsokksellw.workers.dev";
+const SABE_API = "https://sabeauth.brsokksellw.workers.dev/";
 
 const SESSION_KEY = "sabe_session_token";
 
