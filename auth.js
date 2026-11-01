@@ -1,9 +1,10 @@
-// auth.js
-// SABE Account System — Client Auth Module
 
-const SABE_API = "https://sabeauth.brsokksellw.workers.dev/";
+// SABE Account System — Auth Client v2.1
+
+const SABE_API = "https://sabeauth.brsokksellw.workers.dev";
 
 const SESSION_KEY = "sabe_session_token";
+const EXPIRES_KEY = "sabe_session_expires";
 
 let preAuthToken = null;
 
@@ -19,14 +20,21 @@ async function request(path, options = {}) {
 
     const token = sessionStorage.getItem(SESSION_KEY);
 
-    if (token) {
+    if (token && !headers.Authorization) {
         headers.Authorization = `Bearer ${token}`;
     }
 
-    const response = await fetch(`${SABE_API}${path}`, {
-        ...options,
-        headers
-    });
+    let response;
+
+    try {
+        response = await fetch(`${SABE_API}${path}`, {
+            ...options,
+            headers
+        });
+    } catch (error) {
+        console.error("[SABE] Network error:", error);
+        throw new Error("NETWORK_ERROR");
+    }
 
     let result;
 
@@ -37,42 +45,67 @@ async function request(path, options = {}) {
     }
 
     if (!response.ok) {
-        throw new Error(result.error || "REQUEST_FAILED");
+        const error = new Error(
+            result.error || `HTTP_${response.status}`
+        );
+
+        error.status = response.status;
+        error.details = result;
+
+        console.error("[SABE] API error:", {
+            path,
+            status: response.status,
+            error: result.error
+        });
+
+        throw error;
     }
 
     return result;
 }
 
 // -----------------------------
-// STEP 1 — TELEGRAM AUTH
+// TELEGRAM AUTH
 // -----------------------------
 
 export async function startTelegramAuth() {
     const telegram = window.Telegram?.WebApp;
 
-    if (!telegram || !telegram.initData) {
+    if (!telegram) {
         throw new Error("TELEGRAM_REQUIRED");
     }
 
     telegram.ready();
 
+    const initData = telegram.initData;
+
+    if (typeof initData !== "string" || initData.length === 0) {
+        throw new Error("TELEGRAM_INITDATA_MISSING");
+    }
+
+    console.info("[SABE] Telegram Mini App detected");
+    console.info("[SABE] initData length:", initData.length);
+    console.info("[SABE] Platform:", telegram.platform || "unknown");
+
     const result = await request("/api/auth/telegram", {
         method: "POST",
-        body: JSON.stringify({
-            initData: telegram.initData
-        })
+        body: JSON.stringify({ initData })
     });
+
+    if (!result.preAuthToken) {
+        throw new Error("PREAUTH_TOKEN_MISSING");
+    }
 
     preAuthToken = result.preAuthToken;
 
     return {
-        passwordRequired: result.passwordRequired,
-        passwordSetupRequired: result.passwordSetupRequired
+        passwordRequired: Boolean(result.passwordRequired),
+        passwordSetupRequired: Boolean(result.passwordSetupRequired)
     };
 }
 
 // -----------------------------
-// STEP 2A — SET PASSWORD
+// PASSWORD SETUP
 // -----------------------------
 
 export async function setupPassword(password) {
@@ -97,7 +130,7 @@ export async function setupPassword(password) {
 }
 
 // -----------------------------
-// STEP 2B — VERIFY PASSWORD
+// PASSWORD LOGIN
 // -----------------------------
 
 export async function loginWithPassword(password) {
@@ -128,28 +161,32 @@ export async function loginWithPassword(password) {
 // -----------------------------
 
 function saveSession(result) {
-    if (!result.token || !result.expiresAt) {
+    if (!result?.token || !result?.expiresAt) {
         throw new Error("INVALID_SESSION_RESPONSE");
     }
 
     sessionStorage.setItem(SESSION_KEY, result.token);
     sessionStorage.setItem(
-        "sabe_session_expires",
+        EXPIRES_KEY,
         String(result.expiresAt)
     );
 }
 
 export function hasSession() {
-    const token = sessionStorage.getItem(SESSION_KEY);
-    const expiresAt = Number(
-        sessionStorage.getItem("sabe_session_expires")
-    );
+    try {
+        const token = sessionStorage.getItem(SESSION_KEY);
+        const expiresAt = Number(
+            sessionStorage.getItem(EXPIRES_KEY)
+        );
 
-    return Boolean(
-        token &&
-        Number.isFinite(expiresAt) &&
-        expiresAt * 1000 > Date.now()
-    );
+        return Boolean(
+            token &&
+            Number.isFinite(expiresAt) &&
+            expiresAt * 1000 > Date.now()
+        );
+    } catch {
+        return false;
+    }
 }
 
 export async function getMe() {
@@ -176,7 +213,7 @@ export async function logout() {
 
 export function clearSession() {
     sessionStorage.removeItem(SESSION_KEY);
-    sessionStorage.removeItem("sabe_session_expires");
+    sessionStorage.removeItem(EXPIRES_KEY);
     preAuthToken = null;
 }
 
@@ -193,3 +230,21 @@ function validatePassword(password) {
         throw new Error("PASSWORD_LENGTH_INVALID");
     }
 }
+
+// -----------------------------
+// DIAGNOSTICS
+// -----------------------------
+
+export function getAuthDiagnostics() {
+    const telegram = window.Telegram?.WebApp;
+
+    return {
+        telegramAvailable: Boolean(telegram),
+        initDataAvailable: Boolean(telegram?.initData),
+        initDataLength: telegram?.initData?.length || 0,
+        platform: telegram?.platform || null,
+        sessionAvailable: hasSession(),
+        api: SABE_API
+    };
+}
+
